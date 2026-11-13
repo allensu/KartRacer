@@ -1,40 +1,51 @@
 extends SceneTree
-## Headless smoke test: an autopilot drives the player kart around the track
-## and the test passes if it finishes all laps in a sane time.
-## Run: godot --headless -s res://tests/autodrive_test.gd
+## Headless smoke test: the player's kart is handed to an AI driver and the
+## full 8-kart race runs. Passes if the player finishes 3 laps, the AI field
+## finishes too, and drifting, boosts, items and hits all happened.
+## Run: godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd
+
+const AiDriver := preload("res://scripts/ai_driver.gd")
 
 var main: Node
 var frames := 0
-var drift_seen := false
-var boost_seen := false
+var seen := {"drift": false, "boost": false, "item": false, "spin": false, "shield": false}
+var player_done_frame := -1
 
 
 func _initialize() -> void:
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
-	Engine.max_fps = 0
-	physics_frame.connect(_drive)
+	physics_frame.connect(_tick)
 
 
-func _drive() -> void:
+func _tick() -> void:
 	frames += 1
-	var kart = main.kart
-	var track = main.track
-	kart.is_player = false
-	var ahead: float = track.progress_of(kart.global_position) + 18.0
-	var target: Vector3 = track.transform_at(ahead).origin
-	var to_target: Vector3 = kart.to_local(target)
-	var angle := atan2(to_target.x, -to_target.z)
-	kart.steer = clampf(angle * 2.5, -1.0, 1.0)
-	kart.throttle = 1.0
-	kart.drift_held = (kart.drifting and kart.drift_time < 1.2) or (absf(angle) > 0.1 and kart.speed > 15.0)
-	drift_seen = drift_seen or kart.drifting
-	boost_seen = boost_seen or kart.boost_time > 0.0
-	if frames % 600 == 0:
-		print("t=%.0fs lap=%d speed=%.1f offroad=%s pos=%s" % [frames / 60.0, kart.lap, kart.speed, kart.offroad, kart.global_position.round()])
-	if main.state == main.State.FINISHED:
-		print("FINISHED in %.2fs laps=%s drift=%s boost=%s" % [main.race_time, main.lap_times, drift_seen, boost_seen])
-		quit(0)
-	elif frames > 60 * 400:
-		print("FAIL: did not finish, lap=%d" % kart.lap)
+	if frames == 1:
+		main.kart.is_player = false
+		var ai: Node = AiDriver.new()
+		main.kart.add_child(ai)
+		ai.setup(main.kart, 12345)
+	for k in main.karts:
+		seen.drift = seen.drift or k.drifting
+		seen.boost = seen.boost or k.boost_time > 0.0
+		seen.item = seen.item or k.item != ""
+		seen.spin = seen.spin or k.spin_time > 0.0
+		seen.shield = seen.shield or k.shield_time > 0.0
+	if frames % 1200 == 0:
+		var order := []
+		for k in main.standings:
+			order.append("%s(L%d)" % [k.racer_name, k.lap])
+		print("t=%.0fs  %s" % [frames / 60.0, " ".join(order)])
+	if main.kart.finished and player_done_frame < 0:
+		player_done_frame = frames
+		print("Player finished %s in %.2fs, laps=%s" % [main.hud.ordinal(main.kart.place), main.kart.finish_time, main.lap_times])
+	var all_done: bool = main.karts.all(func(k): return k.finished)
+	if all_done or (player_done_frame > 0 and frames - player_done_frame > 60 * 60):
+		var done: int = main.karts.filter(func(k): return k.finished).size()
+		print("Finished karts: %d/8  features seen: %s" % [done, seen])
+		var ok: bool = done >= 6 and seen.values().all(func(v): return v)
+		print("PASS" if ok else "FAIL")
+		quit(0 if ok else 1)
+	elif frames > 60 * 420:
+		print("FAIL: timeout, player lap=%d seen=%s" % [main.kart.lap, seen])
 		quit(1)

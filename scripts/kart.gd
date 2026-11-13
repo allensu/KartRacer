@@ -1,7 +1,8 @@
 extends CharacterBody3D
 ## Arcade kart: accelerate, brake/reverse, steer, hop-drift with mini-turbo.
 ## Driven by `throttle`, `steer` and `drift_held`, which the player's input
-## fills in here (and an AI driver will fill in later), so both share physics.
+## fills in here and the AI driver fills in for opponents, so both share physics.
+## Also holds the racer's item slot and reacts to being hit.
 
 signal lap_completed(lap: int)
 
@@ -24,7 +25,10 @@ const SPARK_COLORS := [Color(1.0, 0.9, 0.5), Color(0.35, 0.65, 1.0), Color(1.0, 
 @export var body_color := Color(0.85, 0.12, 0.15)
 
 var track: Node3D
+var race: Node  # main.gd: spawns items, ranks racers
+var racer_name := "YOU"
 var controls_enabled := false
+var speed_mult := 1.0
 
 var throttle := 0.0
 var steer := 0.0
@@ -36,9 +40,16 @@ var drift_dir := 0.0
 var drift_time := 0.0
 var boost_time := 0.0
 var offroad := false
+var spin_time := 0.0
+var shield_time := 0.0
+
+var item := ""
+var item_roll_time := 0.0  # item roulette still spinning; can't use yet
 
 var lap := 1
 var finished := false
+var finish_time := 0.0
+var place := 1
 var _passed_half := false
 var _last_progress := 0.0
 
@@ -48,6 +59,8 @@ var _wheel_spinners: Array[Node3D] = []
 var _sparks: Array[CPUParticles3D] = []
 var _flames: CPUParticles3D
 var _drift_visual := 0.0
+var _spin_visual := 0.0
+var _shield_mesh: MeshInstance3D
 
 
 func _ready() -> void:
@@ -65,9 +78,16 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if is_player:
+	if is_player and not finished:
 		_read_input()
-	if not controls_enabled:
+	if item_roll_time > 0.0:
+		item_roll_time -= delta
+	if shield_time > 0.0:
+		shield_time -= delta
+	if spin_time > 0.0:
+		spin_time -= delta
+		drifting = false
+	if not controls_enabled or spin_time > 0.0:
 		throttle = 0.0
 		steer = 0.0
 		drift_held = false
@@ -90,10 +110,12 @@ func _read_input() -> void:
 	throttle = Input.get_action_strength("accelerate") - Input.get_action_strength("brake")
 	steer = Input.get_action_strength("steer_right") - Input.get_action_strength("steer_left")
 	drift_held = Input.is_action_pressed("drift")
+	if Input.is_action_just_pressed("use_item"):
+		use_item()
 
 
 func _update_speed(delta: float) -> void:
-	var top := MAX_SPEED * (OFFROAD_FACTOR if offroad and boost_time <= 0.0 else 1.0)
+	var top := MAX_SPEED * speed_mult * (OFFROAD_FACTOR if offroad and boost_time <= 0.0 else 1.0)
 	if boost_time > 0.0:
 		boost_time -= delta
 		speed = move_toward(speed, MAX_SPEED * BOOST_FACTOR, 70.0 * delta)
@@ -208,6 +230,45 @@ func race_progress() -> float:
 	return (lap - 1) * track.length + p
 
 
+# ---------------------------------------------------------------- items
+
+func give_random_item() -> void:
+	if item != "" or race == null:
+		return
+	item = race.roll_item(self)
+	item_roll_time = 1.0 if is_player else 0.0
+
+
+func use_item() -> void:
+	if item == "" or item_roll_time > 0.0 or not controls_enabled or spin_time > 0.0:
+		return
+	var used := item
+	item = ""
+	match used:
+		"nitro":
+			boost(1.6)
+		"oil":
+			race.spawn_oil(self)
+		"seeker":
+			race.spawn_seeker(self)
+		"shield":
+			shield_time = 10.0
+
+
+## Called by oil slicks and seekers. A shield absorbs one hit.
+func hit() -> void:
+	if shield_time > 0.0:
+		shield_time = 0.0
+		return
+	if spin_time > 0.0:
+		return
+	spin_time = 1.2
+	speed *= 0.25
+	boost_time = 0.0
+	drifting = false
+	velocity.y = 4.0
+
+
 func respawn() -> void:
 	if track == null:
 		return
@@ -224,7 +285,14 @@ func respawn() -> void:
 func _update_visuals(delta: float) -> void:
 	var target_yaw := -drift_dir * 0.4 if drifting else 0.0
 	_drift_visual = lerpf(_drift_visual, target_yaw, 1.0 - exp(-10.0 * delta))
-	_model.rotation.y = _drift_visual
+	if spin_time > 0.0:
+		_spin_visual += 13.0 * delta
+	else:
+		_spin_visual = lerp_angle(_spin_visual, 0.0, 1.0 - exp(-12.0 * delta))
+	_model.rotation.y = _drift_visual + _spin_visual
+	_shield_mesh.visible = shield_time > 0.0
+	if _shield_mesh.visible:
+		_shield_mesh.rotation.y += delta * 2.0
 	_model.rotation.z = lerpf(_model.rotation.z, -steer * 0.05 * clampf(speed / MAX_SPEED, 0, 1), 0.2)
 	for w in _front_wheels:
 		w.rotation.y = -steer * 0.45
@@ -358,6 +426,23 @@ func _build_model() -> void:
 		p.position = Vector3(side * 0.82, 0.08, 0.95)
 		_model.add_child(p)
 		_sparks.append(p)
+
+	# Shield bubble.
+	_shield_mesh = MeshInstance3D.new()
+	var bubble := SphereMesh.new()
+	bubble.radius = 1.7
+	bubble.height = 2.6
+	_shield_mesh.mesh = bubble
+	var bubble_mat := StandardMaterial3D.new()
+	bubble_mat.albedo_color = Color(0.35, 0.8, 1.0, 0.22)
+	bubble_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bubble_mat.emission_enabled = true
+	bubble_mat.emission = Color(0.1, 0.4, 0.6)
+	bubble_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_shield_mesh.material_override = bubble_mat
+	_shield_mesh.position.y = 0.8
+	_shield_mesh.visible = false
+	add_child(_shield_mesh)
 
 	# Boost flames from the exhausts.
 	var flame_mesh := SphereMesh.new()

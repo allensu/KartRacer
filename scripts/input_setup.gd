@@ -8,6 +8,7 @@ const KEYS := {
 	"steer_left": [KEY_A, KEY_LEFT],
 	"steer_right": [KEY_D, KEY_RIGHT],
 	"drift": [KEY_SPACE, KEY_SHIFT],
+	"use_item": [KEY_E, KEY_CTRL, KEY_J],
 	"restart": [KEY_R],
 	"confirm": [KEY_ENTER],
 }
@@ -16,12 +17,15 @@ const PAD_BUTTONS := {
 	"accelerate": [JOY_BUTTON_A],
 	"brake": [JOY_BUTTON_X],
 	"drift": [JOY_BUTTON_RIGHT_SHOULDER, JOY_BUTTON_LEFT_SHOULDER],
+	"use_item": [JOY_BUTTON_B, JOY_BUTTON_Y],
 	"restart": [JOY_BUTTON_BACK],
 	"confirm": [JOY_BUTTON_START],
 }
 
 
 static func ensure() -> void:
+	if InputMap.has_action("use_item"):
+		return  # already registered (e.g. after a scene reload)
 	for action in KEYS:
 		if not InputMap.has_action(action):
 			InputMap.add_action(action, 0.2)

@@ -7,8 +7,12 @@ config_version=5
 [application]
 
 config/name="KartRacer"
-run/main_scene="res://scenes/main.tscn"
+run/main_scene="res://scenes/menu.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
+
+[autoload]
+
+Net="*res://scripts/net.gd"
 
 [display]
 

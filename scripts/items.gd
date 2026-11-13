@@ -112,6 +112,8 @@ class ItemBox extends Area3D:
 ## A puddle that spins out the first kart to touch it.
 class OilSlick extends Area3D:
 	var owner_kart: Node
+	var net_id := ""
+	var race: Node
 	var _grace := 0.6
 
 	func _ready() -> void:
@@ -144,7 +146,11 @@ class OilSlick extends Area3D:
 			return
 		if body == owner_kart and _grace > 0.0:
 			return
+		if not body.owned:
+			return  # the computer that drives that kart decides the hit
 		body.hit()
+		if race:
+			race.on_item_consumed(net_id)
 		queue_free()
 
 
@@ -155,6 +161,8 @@ class Seeker extends Node3D:
 	var owner_kart: Node
 	var target: Node3D
 	var track: Node3D
+	var net_id := ""
+	var race: Node
 	var _life := 0.0
 	var _trail: CPUParticles3D
 
@@ -216,8 +224,13 @@ class Seeker extends Node3D:
 			else:
 				aim = target.global_position
 			if to_target.length() < 1.8:
-				target.hit()
-				queue_free()
+				if target.owned:
+					target.hit()
+					if race:
+						race.on_item_consumed(net_id)
+					queue_free()
+				else:
+					visible = false  # wait for the target's computer to confirm
 				return
 		aim.y = 0.8
 		var dir := (aim - global_position)

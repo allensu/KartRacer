@@ -22,6 +22,13 @@ const DRIFT_BOOSTS := [0.7, 1.3]
 const SPARK_COLORS := [Color(1.0, 0.9, 0.5), Color(0.35, 0.65, 1.0), Color(1.0, 0.45, 0.15)]
 
 @export var is_player := true
+## Remote karts are driven by another computer: no local physics, they just
+## follow the state received over the network.
+var is_remote := false
+## True when this computer simulates the kart (and so decides hits, laps, items).
+var owned: bool:
+	get:
+		return not is_remote
 @export var body_color := Color(0.85, 0.12, 0.15)
 
 var track: Node3D
@@ -61,6 +68,11 @@ var _flames: CPUParticles3D
 var _drift_visual := 0.0
 var _spin_visual := 0.0
 var _shield_mesh: MeshInstance3D
+var _net_target := Vector3.ZERO
+var _net_velocity := Vector3.ZERO
+var _net_yaw := 0.0
+var _net_progress := 0.0
+var _net_has_state := false
 
 
 func _ready() -> void:
@@ -78,6 +90,10 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if is_remote:
+		_remote_update(delta)
+		_update_visuals(delta)
+		return
 	if is_player and not finished:
 		_read_input()
 	if item_roll_time > 0.0:
@@ -222,6 +238,8 @@ func _track_progress() -> void:
 
 func race_progress() -> float:
 	## Total distance covered, for ranking racers.
+	if is_remote:
+		return _net_progress
 	if track == null:
 		return 0.0
 	var p := _last_progress
@@ -230,10 +248,65 @@ func race_progress() -> float:
 	return (lap - 1) * track.length + p
 
 
+# ---------------------------------------------------------------- network
+
+## Compact snapshot sent to other players ~20 times a second.
+func get_net_state() -> Array:
+	var p := global_position
+	var flags := (1 if spin_time > 0.0 else 0) | (2 if shield_time > 0.0 else 0) | (4 if boost_time > 0.0 else 0)
+	return [
+		snappedf(p.x, 0.01), snappedf(p.y, 0.01), snappedf(p.z, 0.01),
+		snappedf(rotation.y, 0.001), snappedf(speed, 0.01),
+		int(drift_dir) if drifting else 0, drift_level(), flags,
+		lap, snappedf(race_progress(), 0.1), finished, snappedf(finish_time, 0.001),
+	]
+
+
+func apply_net_state(s: Array) -> void:
+	if s.size() < 12:
+		return
+	var pos := Vector3(s[0], s[1], s[2])
+	if _net_has_state:
+		_net_velocity = (pos - _net_target) * 20.0  # snapshots arrive at ~20 Hz
+		if _net_velocity.length() > 80.0:
+			_net_velocity = Vector3.ZERO  # teleport (respawn): don't extrapolate
+	else:
+		global_position = pos
+		rotation.y = s[3]
+	_net_has_state = true
+	_net_target = pos
+	_net_yaw = s[3]
+	speed = s[4]
+	drift_dir = s[5]
+	drifting = drift_dir != 0.0
+	drift_time = [0.0, DRIFT_LEVELS[0] + 0.01, DRIFT_LEVELS[1] + 0.01][clampi(int(s[6]), 0, 2)]
+	var flags := int(s[7])
+	spin_time = 0.3 if flags & 1 else 0.0
+	shield_time = 1.0 if flags & 2 else 0.0
+	boost_time = 0.3 if flags & 4 else 0.0
+	lap = int(s[8])
+	_net_progress = s[9]
+	finished = bool(s[10])
+	finish_time = s[11]
+
+
+func _remote_update(delta: float) -> void:
+	if not _net_has_state:
+		return
+	_net_target += _net_velocity * delta
+	_net_velocity *= exp(-2.0 * delta)
+	var gap := _net_target - global_position
+	if gap.length() > 25.0:
+		global_position = _net_target
+	else:
+		global_position += gap * (1.0 - exp(-12.0 * delta))
+	rotation.y = lerp_angle(rotation.y, _net_yaw, 1.0 - exp(-12.0 * delta))
+
+
 # ---------------------------------------------------------------- items
 
 func give_random_item() -> void:
-	if item != "" or race == null:
+	if item != "" or race == null or is_remote:
 		return
 	item = race.roll_item(self)
 	item_roll_time = 1.0 if is_player else 0.0

@@ -24,6 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Relay server tests
+        working-directory: server
+        run: npm install && npm test
+
       - name: Cache Godot
         id: cache
         uses: actions/cache@v4
@@ -48,8 +56,19 @@ jobs:
       - name: Import project
         run: ~/godot/godot --headless --import || true
 
-      - name: Smoke test (autopilot drives 3 laps)
+      - name: Smoke test (AI drives a full 8-kart race)
         run: timeout 300 ~/godot/godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd
+
+      - name: Online smoke test (host + 1 client through the relay)
+        run: |
+          (cd server && PORT=8090 node server.js &)
+          sleep 1
+          rm -f /tmp/room.txt
+          timeout 360 ~/godot/godot --headless -s res://tests/net_test.gd -- host ws://localhost:8090 2 /tmp/room.txt &
+          host=$!
+          sleep 3
+          timeout 360 ~/godot/godot --headless -s res://tests/net_test.gd -- client ws://localhost:8090 2 /tmp/room.txt
+          wait $host
 
       - name: Export web build
         run: |

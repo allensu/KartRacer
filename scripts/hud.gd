@@ -71,7 +71,7 @@ func _ready() -> void:
 	help_label.offset_top = -60
 	help_label.offset_right = 900
 	help_label.offset_bottom = -20
-	help_label.text = "W/Up: gas   S/Down: brake   A/D: steer   Space/Shift: drift   E/Ctrl: use item   R: restart"
+	help_label.text = "W/Up: gas   S/Down: brake   A/D: steer   Space/Shift: drift   E/Ctrl: use item   R: restart   Esc: menu"
 	help_label.offset_right = 1100
 
 	position_label = _label(76, Vector2.ZERO)
@@ -174,7 +174,11 @@ func set_standings(standings: Array, player: Node) -> void:
 	standings_label.text = "\n".join(lines)
 
 
-func show_results(player: Node, standings: Array, laps: Array) -> void:
+func set_room(code: String) -> void:
+	help_label.text = "ROOM %s     " % code + help_label.text.replace("R: restart   Esc: menu", "Esc: leave room")
+
+
+func show_results(player: Node, standings: Array, laps: Array, footer := "Press Enter or R to race again") -> void:
 	var lines := ["RESULTS   You finished %s" % ordinal(player.place), ""]
 	for k in standings:
 		var t: String = format_time(k.finish_time) if k.finished else "--:--.---"
@@ -185,7 +189,7 @@ func show_results(player: Node, standings: Array, laps: Array) -> void:
 	for lt in laps:
 		best = minf(best, lt)
 	lines.append("Best lap  " + format_time(best))
-	lines.append("Press Enter or R to race again")
+	lines.append(footer)
 	results_label.text = "\n".join(lines)
 	results_panel.visible = true
 	center_label.text = ""

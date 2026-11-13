@@ -1,6 +1,12 @@
 extends Node3D
-## Sets up the world and runs an 8-racer Grand Prix race: countdown, laps,
-## live standings, items, and the results table.
+## Sets up the world and runs an 8-racer race: countdown, laps, live
+## standings, items and the results table. Works offline (you + 7 AI) and
+## online (up to 4 players + AI), see Net (scripts/net.gd).
+##
+## Online, every computer simulates the karts it owns (its own kart; the host
+## also owns the AI karts) and sends their state ~20 times a second. Item
+## spawns are sent as events, and a hit is decided by the computer that owns
+## the kart being hit.
 
 const InputSetup := preload("res://scripts/input_setup.gd")
 const TrackScript := preload("res://scripts/track.gd")
@@ -11,27 +17,25 @@ const CameraScript := preload("res://scripts/chase_camera.gd")
 const HudScript := preload("res://scripts/hud.gd")
 
 const TOTAL_LAPS := 3
+const FIELD_SIZE := 8
 const COUNTDOWN := 3.0
-const PLAYER_SLOT := 5
-# Every racer in the field. Index 0 is the player.
-const ROSTER := [
-	["YOU", Color(0.85, 0.12, 0.15)],
-	["Blaze", Color(1.0, 0.5, 0.05)],
-	["Pip", Color(0.95, 0.85, 0.1)],
-	["Rocco", Color(0.15, 0.65, 0.25)],
-	["Nova", Color(0.1, 0.45, 0.95)],
-	["Taro", Color(0.55, 0.25, 0.8)],
-	["Mika", Color(1.0, 0.45, 0.7)],
-	["Juno", Color(0.9, 0.9, 0.92)],
+const NET_SEND_INTERVAL := 0.05
+const COLORS := [
+	Color(0.85, 0.12, 0.15), Color(0.1, 0.45, 0.95), Color(0.15, 0.65, 0.25), Color(0.95, 0.85, 0.1),
+	Color(1.0, 0.5, 0.05), Color(0.55, 0.25, 0.8), Color(1.0, 0.45, 0.7), Color(0.9, 0.9, 0.92),
 ]
+const AI_NAMES := ["Blaze", "Pip", "Rocco", "Nova", "Taro", "Mika", "Juno"]
+# Grid slot for each kart index: humans start mid-pack, AI fill the rest.
+const GRID_ORDER := [5, 4, 6, 7, 3, 2, 1, 0]
 const ITEM_ROWS := [0.18, 0.47, 0.76]
 const ITEM_LANES := [-4.5, -1.5, 1.5, 4.5]
 
 enum State { COUNTDOWN, RACING, FINISHED }
 
 var track: Node3D
-var kart: CharacterBody3D  # the player's kart
+var kart: CharacterBody3D  # the local player's kart
 var karts: Array[CharacterBody3D] = []
+var human_karts: Array[CharacterBody3D] = []
 var standings: Array[CharacterBody3D] = []
 var cam: Camera3D
 var hud: CanvasLayer
@@ -44,9 +48,16 @@ var _lap_start := 0.0
 var _go_timer := 0.0
 var _rng := RandomNumberGenerator.new()
 
+var online := false
+var _send_timer := 0.0
+var _item_seq := 0
+var _net_items := {}  # net id -> oil slick / seeker node
+var _leaving := -1.0
+
 
 func _ready() -> void:
 	InputSetup.ensure()
+	online = Net.is_online()
 	_rng.randomize()
 	_build_environment()
 
@@ -66,29 +77,36 @@ func _ready() -> void:
 	add_child(hud)
 	hud.set_lap(1, TOTAL_LAPS)
 	hud.set_time(0.0)
+	if online:
+		hud.set_room(Net.room_code)
+		Net.message.connect(_on_net_message)
+		Net.room_closed.connect(_on_room_closed)
+		Net.returned_to_lobby.connect(_go_to_menu)
 	_update_standings()
 
 
 func _spawn_field() -> void:
-	# Opponents fill the grid slots around the player.
-	var slots: Array[int] = []
-	for s in ROSTER.size():
-		if s != PLAYER_SLOT:
-			slots.append(s)
-	for i in ROSTER.size():
+	var humans: Array = Net.race_players if online else [{"id": 0, "name": "YOU"}]
+	var my_id: int = Net.my_id if online else 0
+	var i_own_ai: bool = not online or Net.is_host()
+	for i in FIELD_SIZE:
 		var k: CharacterBody3D = KartScript.new()
-		k.racer_name = ROSTER[i][0]
-		k.body_color = ROSTER[i][1]
-		k.is_player = i == 0
+		var is_human := i < humans.size()
+		k.racer_name = str(humans[i].name) if is_human else AI_NAMES[(i - humans.size()) % AI_NAMES.size()]
+		k.body_color = COLORS[i]
+		k.is_player = is_human and int(humans[i].id) == my_id
+		k.is_remote = (is_human and not k.is_player) or (not is_human and not i_own_ai)
 		k.track = track
 		k.race = self
-		k.transform = track.grid_transform(PLAYER_SLOT if i == 0 else slots[i - 1])
+		k.transform = track.grid_transform(GRID_ORDER[i])
 		add_child(k)
 		k.lap_completed.connect(_on_lap_completed.bind(k))
-		if i == 0:
+		if k.is_player:
 			kart = k
-		else:
-			_attach_ai(k, i)
+		elif not is_human and i_own_ai:
+			_attach_ai(k, i + (Net.race_seed if online else 0))
+		if is_human:
+			human_karts.append(k)
 		karts.append(k)
 
 
@@ -109,9 +127,25 @@ func _place_item_boxes() -> void:
 
 
 func _process(delta: float) -> void:
-	if Input.is_action_just_pressed("restart") or (state == State.FINISHED and Input.is_action_just_pressed("confirm")):
+	if _leaving >= 0.0:
+		_leaving -= delta
+		if _leaving < 0.0:
+			_go_to_menu()
+		return
+	if Input.is_action_just_pressed("menu"):
+		_quit_race()
+		return
+	if Input.is_action_just_pressed("restart") and not online:
 		get_tree().reload_current_scene()
 		return
+	if state == State.FINISHED and Input.is_action_just_pressed("confirm"):
+		if not online:
+			get_tree().reload_current_scene()
+			return
+		if Net.is_host():
+			Net.back_to_lobby()
+			_go_to_menu()
+			return
 
 	match state:
 		State.COUNTDOWN:
@@ -140,7 +174,24 @@ func _process(delta: float) -> void:
 	hud.set_item(kart.item, kart.item_roll_time)
 	hud.set_standings(standings, kart)
 	if state == State.FINISHED and _go_timer <= 0.0:
-		hud.show_results(kart, standings, lap_times)
+		var footer := "Press Enter or R to race again"
+		if online:
+			footer = "Press Enter to return to the lobby" if Net.is_host() else "Waiting for the host..."
+		hud.show_results(kart, standings, lap_times, footer)
+
+
+func _physics_process(delta: float) -> void:
+	if not online:
+		return
+	_send_timer += delta
+	if _send_timer < NET_SEND_INTERVAL:
+		return
+	_send_timer = 0.0
+	var states := []
+	for i in karts.size():
+		if karts[i].owned:
+			states.append([i] + karts[i].get_net_state())
+	Net.relay({"t": "s", "k": states})
 
 
 func _on_lap_completed(lap: int, k: CharacterBody3D) -> void:
@@ -165,6 +216,53 @@ func _on_lap_completed(lap: int, k: CharacterBody3D) -> void:
 		_go_timer = 1.5
 
 
+func _quit_race() -> void:
+	if online:
+		Net.leave()
+	_go_to_menu()
+
+
+func _go_to_menu() -> void:
+	get_tree().change_scene_to_file("res://scenes/menu.tscn")
+
+
+func _on_room_closed(reason: String) -> void:
+	hud.show_center(reason, Color(1.0, 0.5, 0.4))
+	_leaving = 3.0
+
+
+# ---------------------------------------------------------------- network events
+
+func _on_net_message(_from: int, d: Dictionary) -> void:
+	match d.get("t", ""):
+		"s":
+			for entry in d.get("k", []):
+				var idx := int(entry[0])
+				if idx >= 0 and idx < karts.size() and karts[idx].is_remote:
+					karts[idx].apply_net_state(entry.slice(1))
+		"oil":
+			_make_oil(karts[int(d.k)], Vector3(d.p[0], 0.0, d.p[1]), str(d.id))
+		"seek":
+			var target: CharacterBody3D = karts[int(d.target)] if int(d.target) >= 0 else null
+			_make_seeker(karts[int(d.k)], target, Vector3(d.p[0], 0.8, d.p[1]), float(d.r), str(d.id))
+		"rm":
+			var node = _net_items.get(str(d.id))
+			if node != null and is_instance_valid(node):
+				node.queue_free()
+			_net_items.erase(str(d.id))
+
+
+func on_item_consumed(net_id: String) -> void:
+	_net_items.erase(net_id)
+	if online and net_id != "":
+		Net.relay({"t": "rm", "id": net_id})
+
+
+func _next_item_id() -> String:
+	_item_seq += 1
+	return "%d-%d" % [Net.my_id, _item_seq]
+
+
 # ---------------------------------------------------------------- race queries used by karts and AI
 
 func _update_standings() -> void:
@@ -184,11 +282,16 @@ func kart_ahead_of(k: CharacterBody3D) -> CharacterBody3D:
 	return standings[i - 1] if i > 0 else null
 
 
-## Positive when `k` is behind the player (metres), negative when ahead.
+## How far (metres) `k` is behind the best-placed human; negative when ahead.
+## AI use this for gentle catch-up.
 func gap_to_player(k: CharacterBody3D) -> float:
-	if k == kart or kart.finished:
+	var best := -INF
+	for h in human_karts:
+		if not h.finished:
+			best = maxf(best, h.race_progress())
+	if best == -INF or human_karts.has(k):
 		return 0.0
-	return kart.race_progress() - k.race_progress()
+	return best - k.race_progress()
 
 
 func roll_item(k: CharacterBody3D) -> String:
@@ -196,25 +299,49 @@ func roll_item(k: CharacterBody3D) -> String:
 
 
 func spawn_oil(k: CharacterBody3D) -> void:
-	var oil: Area3D = Items.OilSlick.new()
-	oil.owner_kart = k
 	var back := k.global_transform.basis.z
 	back.y = 0.0
-	oil.position = k.global_position + back.normalized() * 2.8
-	oil.position.y = 0.0
-	add_child(oil)
+	var pos := k.global_position + back.normalized() * 2.8
+	var id := _next_item_id()
+	_make_oil(k, pos, id)
+	if online:
+		Net.relay({"t": "oil", "id": id, "k": karts.find(k), "p": [snappedf(pos.x, 0.01), snappedf(pos.z, 0.01)]})
 
 
 func spawn_seeker(k: CharacterBody3D) -> void:
-	var s: Node3D = Items.Seeker.new()
-	s.owner_kart = k
-	s.track = track
-	s.target = kart_ahead_of(k)
 	var fwd := -k.global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized()
+	var pos := k.global_position + fwd * 2.8
+	var target := kart_ahead_of(k)
+	var yaw := atan2(-fwd.x, -fwd.z)
+	var id := _next_item_id()
+	_make_seeker(k, target, pos, yaw, id)
+	if online:
+		Net.relay({"t": "seek", "id": id, "k": karts.find(k), "target": karts.find(target) if target else -1,
+			"p": [snappedf(pos.x, 0.01), snappedf(pos.z, 0.01)], "r": snappedf(yaw, 0.001)})
+
+
+func _make_oil(k: CharacterBody3D, pos: Vector3, id: String) -> void:
+	var oil: Area3D = Items.OilSlick.new()
+	oil.owner_kart = k
+	oil.net_id = id
+	oil.race = self
+	oil.position = Vector3(pos.x, 0.0, pos.z)
+	add_child(oil)
+	_net_items[id] = oil
+
+
+func _make_seeker(k: CharacterBody3D, target: CharacterBody3D, pos: Vector3, yaw: float, id: String) -> void:
+	var s: Node3D = Items.Seeker.new()
+	s.owner_kart = k
+	s.track = track
+	s.target = target
+	s.net_id = id
+	s.race = self
 	add_child(s)
-	s.global_transform = Transform3D(Basis.looking_at(fwd, Vector3.UP), k.global_position + fwd * 2.8 + Vector3.UP * 0.8)
+	s.global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(pos.x, 0.8, pos.z))
+	_net_items[id] = s
 
 
 func _build_environment() -> void:

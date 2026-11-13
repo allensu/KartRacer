@@ -11,6 +11,7 @@ const KEYS := {
 	"use_item": [KEY_E, KEY_CTRL, KEY_J],
 	"restart": [KEY_R],
 	"confirm": [KEY_ENTER],
+	"menu": [KEY_ESCAPE],
 }
 
 const PAD_BUTTONS := {
@@ -24,7 +25,7 @@ const PAD_BUTTONS := {
 
 
 static func ensure() -> void:
-	if InputMap.has_action("use_item"):
+	if InputMap.has_action("menu"):
 		return  # already registered (e.g. after a scene reload)
 	for action in KEYS:
 		if not InputMap.has_action(action):

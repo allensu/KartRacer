@@ -71,7 +71,7 @@ func _ready() -> void:
 	help_label.offset_top = -60
 	help_label.offset_right = 900
 	help_label.offset_bottom = -20
-	help_label.text = "W/Up: gas   S/Down: brake   A/D: steer   Space/Shift: drift   E/Ctrl: use item   R: restart   Esc: menu"
+	help_label.text = "W/Up: gas   S/Down: brake   A/D: steer   Space/Shift: drift   E/Ctrl: use item   M: mute   R: restart   Esc: menu"
 	help_label.offset_right = 1100
 
 	position_label = _label(76, Vector2.ZERO)
@@ -174,6 +174,18 @@ func set_standings(standings: Array, player: Node) -> void:
 	standings_label.text = "\n".join(lines)
 
 
+func setup_minimap(track: Node3D, karts: Array, me: Node3D) -> void:
+	var map: Control = preload("res://scripts/minimap.gd").new()
+	map.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	map.offset_left = 24
+	map.offset_right = 244
+	map.offset_top = -290
+	map.offset_bottom = -70
+	add_child(map)
+	map.size = Vector2(220, 220)
+	map.setup(track, karts, me)
+
+
 func set_room(code: String) -> void:
 	help_label.text = "ROOM %s     " % code + help_label.text.replace("R: restart   Esc: menu", "Esc: leave room")
 
@@ -195,6 +207,9 @@ func show_results(player: Node, standings: Array, laps: Array, footer := "Press 
 	center_label.text = ""
 	standings_label.visible = false
 	item_panel.visible = false
+	for c in get_children():
+		if c.has_method("setup"):
+			c.visible = false
 
 
 static func ordinal(n: int) -> String:

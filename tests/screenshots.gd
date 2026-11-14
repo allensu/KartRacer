@@ -1,6 +1,6 @@
 extends SceneTree
 ## Renders a few gameplay screenshots for review (needs a real renderer):
-##   xvfb-run godot --rendering-driver opengl3 --fixed-fps 60 -s res://tests/screenshots.gd -- OUT_DIR
+##   xvfb-run godot --rendering-driver opengl3 --fixed-fps 60 -s res://tests/screenshots.gd -- OUT_DIR [TRACK]
 ## Shots: approaching item boxes, a seeker in flight, and the results screen.
 
 const AiDriver := preload("res://scripts/ai_driver.gd")
@@ -8,12 +8,18 @@ const AiDriver := preload("res://scripts/ai_driver.gd")
 var main: Node
 var frames := 0
 var out_dir := "user://"
+var _prefix := ""
 
 
 func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0:
 		out_dir = args[0]
+	var prefix := ""
+	if args.size() > 1:
+		root.get_node("Net").track_id = args[1]
+		prefix = args[1] + "_"
+	_prefix = prefix
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	physics_frame.connect(_tick)
@@ -22,7 +28,7 @@ func _initialize() -> void:
 func _shot(name: String) -> void:
 	await process_frame
 	var img := root.get_viewport().get_texture().get_image()
-	img.save_png(out_dir.path_join(name + ".png"))
+	img.save_png(out_dir.path_join(_prefix + name + ".png"))
 	print("saved ", name)
 
 

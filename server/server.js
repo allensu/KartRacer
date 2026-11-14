@@ -6,9 +6,9 @@
 // players in a room. Protocol (JSON text frames):
 //
 //   client -> server
-//     {t:"create", name}            open a new room, become host
-//     {t:"join", code, name}        join an open room
-//     {t:"start"}                   host only: begin a race (relayed as "start")
+//     {t:"create", name, char}      open a new room, become host (char = racer 0-7)
+//     {t:"join", code, name, char}  join an open room
+//     {t:"start", track}            host only: begin a race (relayed as "start")
 //     {t:"lobby"}                   host only: race over, return to the lobby
 //     {t:"relay", d}                forward d to everyone else in the room
 //     {t:"ping"}                    keep-alive
@@ -16,7 +16,7 @@
 //     {t:"joined", code, id, hostId, players}
 //     {t:"lobby", hostId, players}  membership changed (back:true = race over,
 //                                   everyone returns to the lobby)
-//     {t:"start", seed, players}    race begins
+//     {t:"start", seed, track, players}  race begins
 //     {t:"msg", from, d}            relayed payload
 //     {t:"closed", reason}          room ended (host left)
 //     {t:"error", msg}
@@ -49,8 +49,18 @@ function send(ws, obj) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
+function cleanChar(c) {
+  const n = Number(c);
+  return Number.isInteger(n) && n >= 0 && n < 8 ? n : 0;
+}
+
+function cleanTrack(t) {
+  const s = String(t || "").replace(/[^a-z0-9_]/g, "").slice(0, 24);
+  return s || "sunset";
+}
+
 function roster(room) {
-  return room.players.map((p) => ({ id: p.id, name: p.name }));
+  return room.players.map((p) => ({ id: p.id, name: p.name, char: p.char }));
 }
 
 function broadcast(room, obj, exceptId) {
@@ -83,7 +93,7 @@ function handle(ws, msg) {
       leave(ws);
       const room = { code: makeCode(), hostId: ws.playerId, players: [], racing: false };
       rooms.set(room.code, room);
-      room.players.push({ id: ws.playerId, name: cleanName(msg.name, "Player 1"), ws });
+      room.players.push({ id: ws.playerId, name: cleanName(msg.name, "Player 1"), char: cleanChar(msg.char), ws });
       ws.room = room;
       send(ws, { t: "joined", code: room.code, id: ws.playerId, hostId: room.hostId, players: roster(room) });
       return;
@@ -95,7 +105,12 @@ function handle(ws, msg) {
       if (room.racing) return send(ws, { t: "error", msg: "That race has already started" });
       if (room.players.length >= MAX_PLAYERS) return send(ws, { t: "error", msg: "Room is full (4 players)" });
       leave(ws);
-      room.players.push({ id: ws.playerId, name: cleanName(msg.name, "Player " + (room.players.length + 1)), ws });
+      room.players.push({
+        id: ws.playerId,
+        name: cleanName(msg.name, "Player " + (room.players.length + 1)),
+        char: cleanChar(msg.char),
+        ws,
+      });
       ws.room = room;
       send(ws, { t: "joined", code: room.code, id: ws.playerId, hostId: room.hostId, players: roster(room) });
       broadcast(room, { t: "lobby", hostId: room.hostId, players: roster(room) }, ws.playerId);
@@ -105,7 +120,7 @@ function handle(ws, msg) {
       const room = ws.room;
       if (!room || room.hostId !== ws.playerId) return;
       room.racing = true;
-      broadcast(room, { t: "start", seed: Math.floor(Math.random() * 1e9), players: roster(room) });
+      broadcast(room, { t: "start", seed: Math.floor(Math.random() * 1e9), track: cleanTrack(msg.track), players: roster(room) });
       return;
     }
     case "lobby": {

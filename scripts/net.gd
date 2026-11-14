@@ -20,6 +20,8 @@ enum Mode { SINGLE, ONLINE }
 var mode := Mode.SINGLE
 var server_url := DEFAULT_SERVER
 var player_name := "Player"
+var char_id := 0          # chosen racer (see roster.gd)
+var track_id := "sunset"  # chosen track (single player, or host's pick)
 
 var socket: WebSocketPeer
 var connected := false
@@ -56,17 +58,17 @@ func is_host() -> bool:
 
 func create_room(name: String) -> void:
 	player_name = name
-	_open({"t": "create", "name": name})
+	_open({"t": "create", "name": name, "char": char_id})
 
 
 func join_room(code: String, name: String) -> void:
 	player_name = name
-	_open({"t": "join", "code": code.strip_edges().to_upper(), "name": name})
+	_open({"t": "join", "code": code.strip_edges().to_upper(), "name": name, "char": char_id})
 
 
 func start_race() -> void:
 	if is_host():
-		_send({"t": "start"})
+		_send({"t": "start", "track": track_id})
 
 
 func back_to_lobby() -> void:
@@ -165,6 +167,7 @@ func _handle(msg: Dictionary) -> void:
 				returned_to_lobby.emit()
 		"start":
 			race_seed = int(msg.seed)
+			track_id = str(msg.get("track", "sunset"))
 			race_players = msg.players
 			mode = Mode.ONLINE
 			race_starting.emit()

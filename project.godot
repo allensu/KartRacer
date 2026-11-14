@@ -13,6 +13,7 @@ config/features=PackedStringArray("4.3", "GL Compatibility")
 [autoload]
 
 Net="*res://scripts/net.gd"
+Sfx="*res://scripts/sfx.gd"
 
 [display]
 

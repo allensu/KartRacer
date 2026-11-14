@@ -57,7 +57,9 @@ jobs:
         run: ~/godot/godot --headless --import || true
 
       - name: Smoke test (AI drives a full 8-kart race)
-        run: timeout 300 ~/godot/godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd
+        run: |
+          timeout 300 ~/godot/godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd -- sunset
+          timeout 300 ~/godot/godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd -- canyon
 
       - name: Online smoke test (host + 1 client through the relay)
         run: |

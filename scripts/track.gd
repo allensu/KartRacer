@@ -10,14 +10,51 @@ const WALL_HEIGHT := 1.2
 const SEGMENT := 2.0
 const TEXTURE_REPEAT := 16.0
 
-# Control points (x, z) of the circuit, driven in this order. Start line is the first point.
-const POINTS := [
-	Vector2(0, 0), Vector2(0, -110), Vector2(15, -165), Vector2(65, -190),
-	Vector2(125, -175), Vector2(150, -125), Vector2(135, -78), Vector2(95, -55),
-	Vector2(85, -5), Vector2(115, 35), Vector2(180, 55), Vector2(205, 115),
-	Vector2(170, 170), Vector2(95, 185), Vector2(30, 160), Vector2(5, 90),
-]
+# Each layout: control points (x, z) driven in order (start line at the first
+# point) plus a visual theme. Add a track by adding an entry here.
+const LAYOUTS := {
+	"sunset": {
+		"name": "Sunset Loop",
+		"points": [
+			Vector2(0, 0), Vector2(0, -110), Vector2(15, -165), Vector2(65, -190),
+			Vector2(125, -175), Vector2(150, -125), Vector2(135, -78), Vector2(95, -55),
+			Vector2(85, -5), Vector2(115, 35), Vector2(180, 55), Vector2(205, 115),
+			Vector2(170, 170), Vector2(95, 185), Vector2(30, 160), Vector2(5, 90),
+		],
+		"ground": Color(0.22, 0.42, 0.16),
+		"walls": [Color(0.1, 0.35, 0.85), Color(0.95, 0.95, 0.95)],
+		"scenery": "pines",
+		"hills": Color(0.32, 0.5, 0.36),
+		"sky_top": Color(0.22, 0.45, 0.85),
+		"sky_horizon": Color(0.85, 0.78, 0.7),
+		"fog": Color(0.78, 0.8, 0.85),
+		"sun": Color(1.0, 0.95, 0.85),
+	},
+	"canyon": {
+		"name": "Desert Canyon",
+		"points": [
+			Vector2(0, 0), Vector2(0, -90), Vector2(-30, -140), Vector2(-90, -152),
+			Vector2(-132, -110), Vector2(-120, -60), Vector2(-72, -38), Vector2(-62, 10),
+			Vector2(-110, 50), Vector2(-122, 112), Vector2(-70, 162), Vector2(10, 172),
+			Vector2(62, 132), Vector2(52, 72), Vector2(12, 42),
+		],
+		"ground": Color(0.72, 0.52, 0.3),
+		"walls": [Color(0.85, 0.35, 0.1), Color(0.98, 0.92, 0.8)],
+		"scenery": "desert",
+		"hills": Color(0.7, 0.36, 0.2),
+		"sky_top": Color(0.3, 0.5, 0.82),
+		"sky_horizon": Color(0.98, 0.78, 0.55),
+		"fog": Color(0.95, 0.8, 0.62),
+		"sun": Color(1.0, 0.88, 0.7),
+	},
+}
+const TRACK_ORDER := ["sunset", "canyon"]
 
+var layout_id := "sunset"
+var theme: Dictionary = LAYOUTS["sunset"]
+var _points: Array = []
+var _center := Vector3.ZERO
+var _extent := 200.0
 var curve: Curve3D
 var length := 0.0
 var _pos: PackedVector3Array = []
@@ -26,7 +63,17 @@ var _count := 0
 var _step := 0.0
 
 
-func build() -> void:
+func build(id := "sunset") -> void:
+	layout_id = id if LAYOUTS.has(id) else "sunset"
+	theme = LAYOUTS[layout_id]
+	_points = theme.points
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for p in _points:
+		lo = Vector2(minf(lo.x, p.x), minf(lo.y, p.y))
+		hi = Vector2(maxf(hi.x, p.x), maxf(hi.y, p.y))
+	_center = Vector3((lo.x + hi.x) * 0.5, 0, (lo.y + hi.y) * 0.5)
+	_extent = maxf(hi.x - lo.x, hi.y - lo.y) * 0.5
 	_build_curve()
 	_build_frames()
 	_build_ground()
@@ -47,6 +94,10 @@ func lateral_distance(world_pos: Vector3) -> float:
 	var p := to_local(world_pos)
 	var c := curve.get_closest_point(p)
 	return Vector2(p.x - c.x, p.z - c.z).length()
+
+
+func centerline() -> PackedVector3Array:
+	return _pos
 
 
 func is_offroad(world_pos: Vector3) -> bool:
@@ -73,10 +124,10 @@ func grid_transform(slot: int) -> Transform3D:
 func _build_curve() -> void:
 	curve = Curve3D.new()
 	curve.bake_interval = 0.5
-	var n := POINTS.size()
+	var n := _points.size()
 	for i in n + 1:
-		var p := _v3(POINTS[i % n])
-		var tangent := (_v3(POINTS[(i + 1) % n]) - _v3(POINTS[(i - 1 + n) % n])) * 0.22
+		var p := _v3(_points[i % n])
+		var tangent := (_v3(_points[(i + 1) % n]) - _v3(_points[(i - 1 + n) % n])) * 0.22
 		curve.add_point(p, -tangent, tangent)
 	length = curve.get_baked_length()
 
@@ -136,7 +187,7 @@ func _build_ground() -> void:
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(1400, 1400)
 	ground.mesh = plane
-	ground.position = Vector3(100, -0.02, 0)
+	ground.position = Vector3(_center.x, -0.02, _center.z)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = _grass_texture()
 	mat.uv1_scale = Vector3(140, 140, 1)
@@ -179,7 +230,7 @@ func _build_curbs() -> void:
 
 
 func _build_walls() -> void:
-	var colors := [Color(0.1, 0.35, 0.85), Color(0.95, 0.95, 0.95)]
+	var colors: Array = theme.walls
 	var dist := ROAD_WIDTH * 0.5 + CURB_WIDTH + RUNOFF
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
@@ -269,13 +320,48 @@ func _build_scenery() -> void:
 	var tries := 0
 	while spots.size() < 160 and tries < 4000:
 		tries += 1
-		var p := Vector3(rng.randf_range(-140, 340), 0, rng.randf_range(-300, 300))
+		var p := _center + Vector3(rng.randf_range(-1, 1), 0, rng.randf_range(-1, 1)) * (_extent + 120.0)
 		var c := curve.get_closest_point(p)
 		if Vector2(p.x - c.x, p.z - c.z).length() < clear:
 			continue
 		var s := rng.randf_range(0.8, 1.6)
 		spots.append(Transform3D(Basis().rotated(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s, s)), p))
 
+	if theme.scenery == "desert":
+		_build_desert_props(spots, rng)
+	else:
+		_build_pines(spots)
+
+	# Distant hills to give the horizon some shape.
+	var hill_mat := StandardMaterial3D.new()
+	hill_mat.albedo_color = theme.hills
+	hill_mat.roughness = 1.0
+	for k in 14:
+		var angle := k * TAU / 14.0 + rng.randf_range(-0.1, 0.1)
+		var hill := MeshInstance3D.new()
+		var r := rng.randf_range(60, 110)
+		var dist := _extent + 330.0
+		if theme.scenery == "desert":
+			# Flat-topped mesas.
+			var mesa := CylinderMesh.new()
+			mesa.top_radius = r * 0.7
+			mesa.bottom_radius = r
+			mesa.height = rng.randf_range(40, 90)
+			mesa.radial_segments = 7
+			mesa.material = hill_mat
+			hill.mesh = mesa
+			hill.position = _center + Vector3(cos(angle) * dist, mesa.height * 0.5 - 2.0, sin(angle) * dist)
+		else:
+			var sphere := SphereMesh.new()
+			sphere.radius = r
+			sphere.height = r * rng.randf_range(0.7, 1.1)
+			sphere.material = hill_mat
+			hill.mesh = sphere
+			hill.position = _center + Vector3(cos(angle) * dist, -r * 0.15, sin(angle) * dist)
+		add_child(hill)
+
+
+func _build_pines(spots: Array[Transform3D]) -> void:
 	var trunk := CylinderMesh.new()
 	trunk.top_radius = 0.25
 	trunk.bottom_radius = 0.35
@@ -285,7 +371,6 @@ func _build_scenery() -> void:
 	trunk_mat.albedo_color = Color(0.4, 0.26, 0.15)
 	trunk.material = trunk_mat
 	_multimesh(trunk, spots, Vector3(0, 1.0, 0))
-
 	var leaves := CylinderMesh.new()
 	leaves.top_radius = 0.0
 	leaves.bottom_radius = 2.2
@@ -297,21 +382,39 @@ func _build_scenery() -> void:
 	leaves.material = leaf_mat
 	_multimesh(leaves, spots, Vector3(0, 3.8, 0))
 
-	# Distant hills to give the horizon some shape.
-	var hill_mat := StandardMaterial3D.new()
-	hill_mat.albedo_color = Color(0.32, 0.5, 0.36)
-	hill_mat.roughness = 1.0
-	for k in 14:
-		var angle := k * TAU / 14.0 + rng.randf_range(-0.1, 0.1)
-		var hill := MeshInstance3D.new()
-		var sphere := SphereMesh.new()
-		var r := rng.randf_range(60, 110)
-		sphere.radius = r
-		sphere.height = r * rng.randf_range(0.7, 1.1)
-		sphere.material = hill_mat
-		hill.mesh = sphere
-		hill.position = Vector3(100 + cos(angle) * 520, -r * 0.15, sin(angle) * 520)
-		add_child(hill)
+
+func _build_desert_props(spots: Array[Transform3D], rng: RandomNumberGenerator) -> void:
+	var cacti: Array[Transform3D] = []
+	var rocks: Array[Transform3D] = []
+	for t in spots:
+		if rng.randf() < 0.55:
+			cacti.append(t)
+		else:
+			rocks.append(t)
+	var cactus_mat := StandardMaterial3D.new()
+	cactus_mat.albedo_color = Color(0.25, 0.5, 0.25)
+	cactus_mat.roughness = 0.8
+	var stem := CapsuleMesh.new()
+	stem.radius = 0.45
+	stem.height = 4.2
+	stem.material = cactus_mat
+	_multimesh(stem, cacti, Vector3(0, 2.1, 0))
+	var arm := CapsuleMesh.new()
+	arm.radius = 0.3
+	arm.height = 1.8
+	arm.material = cactus_mat
+	_multimesh(arm, cacti, Vector3(0.75, 2.6, 0))
+	_multimesh(arm, cacti, Vector3(-0.75, 1.9, 0))
+	var rock_mat := StandardMaterial3D.new()
+	rock_mat.albedo_color = Color(0.55, 0.32, 0.2)
+	rock_mat.roughness = 1.0
+	var rock := SphereMesh.new()
+	rock.radius = 1.6
+	rock.height = 2.2
+	rock.radial_segments = 7
+	rock.rings = 4
+	rock.material = rock_mat
+	_multimesh(rock, rocks, Vector3(0, 0.4, 0))
 
 
 func _multimesh(mesh: Mesh, spots: Array[Transform3D], lift: Vector3) -> void:
@@ -357,7 +460,8 @@ func _grass_texture() -> ImageTexture:
 	for y in n:
 		for x in n:
 			var v := rng.randf_range(-0.04, 0.04)
-			img.set_pixel(x, y, Color(0.22 + v, 0.42 + v * 1.5, 0.16 + v))
+			var g: Color = theme.ground
+			img.set_pixel(x, y, Color(g.r + v, g.g + v * 1.5, g.b + v))
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
 

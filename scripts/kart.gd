@@ -30,6 +30,7 @@ var owned: bool:
 	get:
 		return not is_remote
 @export var body_color := Color(0.85, 0.12, 0.15)
+@export var helmet_color := Color(1.0, 0.85, 0.85)
 
 var track: Node3D
 var race: Node  # main.gd: spawns items, ranks racers
@@ -68,6 +69,9 @@ var _flames: CPUParticles3D
 var _drift_visual := 0.0
 var _spin_visual := 0.0
 var _shield_mesh: MeshInstance3D
+var _engine_player: AudioStreamPlayer
+var _last_level := 0
+var _dust: CPUParticles3D
 var _net_target := Vector3.ZERO
 var _net_velocity := Vector3.ZERO
 var _net_yaw := 0.0
@@ -117,6 +121,11 @@ func _physics_process(delta: float) -> void:
 	_after_move()
 	_track_progress()
 	_update_visuals(delta)
+	_update_engine_sound()
+	var lvl := drift_level()
+	if lvl > _last_level:
+		_sfx("spark", -4.0)
+	_last_level = lvl
 
 	if global_position.y < -15.0:
 		respawn()
@@ -177,6 +186,8 @@ func drift_level() -> int:
 
 
 func boost(seconds: float) -> void:
+	if boost_time <= 0.0:
+		_sfx("boost", -4.0)
 	boost_time = maxf(boost_time, seconds)
 
 
@@ -216,6 +227,8 @@ func _after_move() -> void:
 			# Hit a wall: bleed speed based on how head-on the impact was.
 			var fwd := -global_transform.basis.z
 			var head_on := clampf(-fwd.dot(n), 0.0, 1.0)
+			if head_on > 0.4 and absf(speed) > 8.0:
+				_sfx("bump", -3.0)
 			speed *= 1.0 - 0.6 * head_on
 			if head_on > 0.6:
 				drifting = false
@@ -246,6 +259,31 @@ func race_progress() -> float:
 	if not _passed_half and p > track.length * 0.6:
 		p -= track.length  # still behind the line on the opening lap
 	return (lap - 1) * track.length + p
+
+
+# ---------------------------------------------------------------- sound
+
+## True for the kart the camera follows on this computer.
+func is_local_view() -> bool:
+	return race != null and race.kart == self
+
+
+func _sfx(name: String, volume_db := 0.0) -> void:
+	if is_local_view():
+		Sfx.play(name, volume_db)
+
+
+func _update_engine_sound() -> void:
+	if not is_local_view():
+		return
+	if _engine_player == null:
+		_engine_player = AudioStreamPlayer.new()
+		_engine_player.stream = Sfx.engine_stream()
+		_engine_player.volume_db = -14.0
+		add_child(_engine_player)
+		_engine_player.play()
+	var ratio := clampf(absf(speed) / MAX_SPEED, 0.0, 1.5)
+	_engine_player.pitch_scale = 0.55 + ratio * 1.2 + (0.25 if boost_time > 0.0 else 0.0)
 
 
 # ---------------------------------------------------------------- network
@@ -310,6 +348,7 @@ func give_random_item() -> void:
 		return
 	item = race.roll_item(self)
 	item_roll_time = 1.0 if is_player else 0.0
+	_sfx("pickup", -4.0)
 
 
 func use_item() -> void:
@@ -321,10 +360,13 @@ func use_item() -> void:
 		"nitro":
 			boost(1.6)
 		"oil":
+			_sfx("oil")
 			race.spawn_oil(self)
 		"seeker":
+			_sfx("seeker", -3.0)
 			race.spawn_seeker(self)
 		"shield":
+			_sfx("shield")
 			shield_time = 10.0
 
 
@@ -336,6 +378,9 @@ func hit() -> void:
 	if spin_time > 0.0:
 		return
 	spin_time = 1.2
+	_sfx("hit")
+	if is_local_view() and race.cam:
+		race.cam.shake(0.6)
 	speed *= 0.25
 	boost_time = 0.0
 	drifting = false
@@ -377,6 +422,7 @@ func _update_visuals(delta: float) -> void:
 		p.emitting = drifting and is_on_floor()
 		p.color = SPARK_COLORS[level]
 	_flames.emitting = boost_time > 0.0
+	_dust.emitting = offroad and absf(speed) > 6.0 and spin_time <= 0.0
 
 
 func _mat(color: Color, metallic := 0.0, roughness := 0.5) -> StandardMaterial3D:
@@ -432,7 +478,7 @@ func _build_model() -> void:
 	sph.radius = 0.3
 	sph.height = 0.6
 	helmet.mesh = sph
-	helmet.material_override = _mat(body_color.lightened(0.3), 0.2, 0.25)
+	helmet.material_override = _mat(helmet_color, 0.2, 0.25)
 	helmet.position = Vector3(0, 1.35, 0.3)
 	_model.add_child(helmet)
 	_box(Vector3(0.42, 0.14, 0.12), Vector3(0, 1.38, 0.04), _mat(Color(0.1, 0.15, 0.25), 0.8, 0.1), _model)
@@ -499,6 +545,35 @@ func _build_model() -> void:
 		p.position = Vector3(side * 0.82, 0.08, 0.95)
 		_model.add_child(p)
 		_sparks.append(p)
+
+	# Dust kicked up when driving on grass / sand.
+	_dust = CPUParticles3D.new()
+	var dust_mesh := SphereMesh.new()
+	dust_mesh.radius = 0.25
+	dust_mesh.height = 0.5
+	var dust_mat := StandardMaterial3D.new()
+	dust_mat.vertex_color_use_as_albedo = true
+	dust_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dust_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dust_mesh.material = dust_mat
+	_dust.mesh = dust_mesh
+	_dust.amount = 24
+	_dust.lifetime = 0.7
+	_dust.local_coords = false
+	_dust.emitting = false
+	_dust.direction = Vector3(0, 0.6, 1)
+	_dust.spread = 35.0
+	_dust.initial_velocity_min = 1.5
+	_dust.initial_velocity_max = 3.5
+	_dust.gravity = Vector3(0, -1.0, 0)
+	_dust.scale_amount_min = 0.8
+	_dust.scale_amount_max = 2.0
+	_dust.position = Vector3(0, 0.2, 1.0)
+	var dust_grad := Gradient.new()
+	dust_grad.set_color(0, Color(0.75, 0.65, 0.48, 0.6))
+	dust_grad.set_color(1, Color(0.75, 0.65, 0.48, 0.0))
+	_dust.color_ramp = dust_grad
+	add_child(_dust)
 
 	# Shield bubble.
 	_shield_mesh = MeshInstance3D.new()

@@ -33,12 +33,14 @@ function client(url) {
   const a = client(url), b = client(url);
   await Promise.all([a.open(), b.open()]);
 
-  a.send({ t: "create", name: "Ann" });
+  a.send({ t: "create", name: "Ann", char: 3 });
   const ja = await a.next("joined");
   assert.strictEqual(ja.code.length, 4);
   b.send({ t: "join", code: ja.code.toLowerCase(), name: "Bob" });
   const jb = await b.next("joined");
   assert.strictEqual(jb.players.length, 2);
+  assert.strictEqual(jb.players[0].char, 3);
+  assert.strictEqual(jb.players[1].char, 0);
   assert.strictEqual((await a.next("lobby")).players.length, 2);
 
   b.send({ t: "relay", d: { hello: 1 } });
@@ -47,9 +49,10 @@ function client(url) {
   assert.strictEqual(relayed.from, jb.id);
 
   b.send({ t: "start" }); // not host: ignored
-  a.send({ t: "start" });
+  a.send({ t: "start", track: "canyon" });
   const sa = await a.next("start"), sb = await b.next("start");
   assert.strictEqual(sa.seed, sb.seed);
+  assert.strictEqual(sb.track, "canyon");
 
   const c = client(url);
   await c.open();

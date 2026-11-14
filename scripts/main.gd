@@ -15,16 +15,12 @@ const AiDriver := preload("res://scripts/ai_driver.gd")
 const Items := preload("res://scripts/items.gd")
 const CameraScript := preload("res://scripts/chase_camera.gd")
 const HudScript := preload("res://scripts/hud.gd")
+const Roster := preload("res://scripts/roster.gd")
 
 const TOTAL_LAPS := 3
 const FIELD_SIZE := 8
 const COUNTDOWN := 3.0
 const NET_SEND_INTERVAL := 0.05
-const COLORS := [
-	Color(0.85, 0.12, 0.15), Color(0.1, 0.45, 0.95), Color(0.15, 0.65, 0.25), Color(0.95, 0.85, 0.1),
-	Color(1.0, 0.5, 0.05), Color(0.55, 0.25, 0.8), Color(1.0, 0.45, 0.7), Color(0.9, 0.9, 0.92),
-]
-const AI_NAMES := ["Blaze", "Pip", "Rocco", "Nova", "Taro", "Mika", "Juno"]
 # Grid slot for each kart index: humans start mid-pack, AI fill the rest.
 const GRID_ORDER := [5, 4, 6, 7, 3, 2, 1, 0]
 const ITEM_ROWS := [0.18, 0.47, 0.76]
@@ -53,17 +49,18 @@ var _send_timer := 0.0
 var _item_seq := 0
 var _net_items := {}  # net id -> oil slick / seeker node
 var _leaving := -1.0
+var _last_count := 0
 
 
 func _ready() -> void:
 	InputSetup.ensure()
 	online = Net.is_online()
 	_rng.randomize()
-	_build_environment()
 
 	track = TrackScript.new()
 	add_child(track)
-	track.build()
+	track.build(Net.track_id)
+	_build_environment()
 	_place_item_boxes()
 	_spawn_field()
 
@@ -77,6 +74,8 @@ func _ready() -> void:
 	add_child(hud)
 	hud.set_lap(1, TOTAL_LAPS)
 	hud.set_time(0.0)
+	hud.setup_minimap(track, karts, kart)
+	Sfx.play_music()
 	if online:
 		hud.set_room(Net.room_code)
 		Net.message.connect(_on_net_message)
@@ -86,14 +85,23 @@ func _ready() -> void:
 
 
 func _spawn_field() -> void:
-	var humans: Array = Net.race_players if online else [{"id": 0, "name": "YOU"}]
+	var humans: Array = Net.race_players if online else [{"id": 0, "name": "YOU", "char": Net.char_id}]
 	var my_id: int = Net.my_id if online else 0
 	var i_own_ai: bool = not online or Net.is_host()
+	# Humans keep their chosen racer; AI take the unused racers in roster order.
+	var chars: Array[int] = []
+	for h in humans:
+		chars.append(clampi(int(h.get("char", 0)), 0, Roster.count() - 1))
+	for c in Roster.count():
+		if not chars.has(c) and chars.size() < FIELD_SIZE:
+			chars.append(c)
 	for i in FIELD_SIZE:
 		var k: CharacterBody3D = KartScript.new()
 		var is_human := i < humans.size()
-		k.racer_name = str(humans[i].name) if is_human else AI_NAMES[(i - humans.size()) % AI_NAMES.size()]
-		k.body_color = COLORS[i]
+		var ch: Dictionary = Roster.CHARACTERS[chars[i] if i < chars.size() else i % Roster.count()]
+		k.racer_name = str(humans[i].name) if is_human else ch.name
+		k.body_color = ch.color
+		k.helmet_color = ch.helmet
 		k.is_player = is_human and int(humans[i].id) == my_id
 		k.is_remote = (is_human and not k.is_player) or (not is_human and not i_own_ai)
 		k.track = track
@@ -156,8 +164,12 @@ func _process(delta: float) -> void:
 					k.controls_enabled = true
 				_go_timer = 1.0
 				hud.show_center("GO!", Color(0.4, 1.0, 0.4))
+				Sfx.play("go")
 			elif countdown <= COUNTDOWN:
 				hud.show_center(str(ceili(countdown)), Color(1.0, 0.85, 0.2))
+				if ceili(countdown) != _last_count:
+					_last_count = ceili(countdown)
+					Sfx.play("beep")
 		State.RACING, State.FINISHED:
 			race_time += delta
 			if _go_timer > 0.0:
@@ -206,12 +218,14 @@ func _on_lap_completed(lap: int, k: CharacterBody3D) -> void:
 		state = State.FINISHED
 		hud.set_time(race_time)
 		hud.show_center("FINISH!", Color(1.0, 0.9, 0.3))
+		Sfx.play("finish")
 		_go_timer = 2.5
 		# Let the computer drive the player's kart on a cool-down lap.
 		kart.is_player = false
 		_attach_ai(kart, 99)
 	else:
 		hud.set_lap(lap + 1, TOTAL_LAPS)
+		Sfx.play("lap")
 		hud.show_center("FINAL LAP" if lap + 1 == TOTAL_LAPS else "LAP %d" % (lap + 1), Color(1, 1, 1))
 		_go_timer = 1.5
 
@@ -346,8 +360,8 @@ func _make_seeker(k: CharacterBody3D, target: CharacterBody3D, pos: Vector3, yaw
 
 func _build_environment() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.22, 0.45, 0.85)
-	sky_mat.sky_horizon_color = Color(0.85, 0.78, 0.7)
+	sky_mat.sky_top_color = track.theme.sky_top
+	sky_mat.sky_horizon_color = track.theme.sky_horizon
 	sky_mat.ground_horizon_color = Color(0.6, 0.62, 0.55)
 	sky_mat.ground_bottom_color = Color(0.25, 0.3, 0.22)
 	sky_mat.sun_angle_max = 20.0
@@ -362,7 +376,7 @@ func _build_environment() -> void:
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.tonemap_exposure = 0.95
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.78, 0.8, 0.85)
+	env.fog_light_color = track.theme.fog
 	env.fog_density = 0.0009
 	env.fog_sky_affect = 0.3
 	var we := WorldEnvironment.new()
@@ -372,7 +386,7 @@ func _build_environment() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, -35, 0)
 	sun.light_energy = 1.25
-	sun.light_color = Color(1.0, 0.95, 0.85)
+	sun.light_color = track.theme.sun
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 120.0
 	add_child(sun)

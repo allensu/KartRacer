@@ -2,7 +2,7 @@ extends SceneTree
 ## Headless smoke test: the player's kart is handed to an AI driver and the
 ## full 8-kart race runs. Passes if the player finishes 3 laps, the AI field
 ## finishes too, and drifting, boosts, items and hits all happened.
-## Run: godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd
+## Run: godot --headless --fixed-fps 60 -s res://tests/autodrive_test.gd [-- canyon]
 
 const AiDriver := preload("res://scripts/ai_driver.gd")
 
@@ -13,6 +13,9 @@ var player_done_frame := -1
 
 
 func _initialize() -> void:
+	var args := OS.get_cmdline_user_args()
+	if args.size() > 0:
+		root.get_node("Net").track_id = args[0]  # e.g. -- canyon
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	physics_frame.connect(_tick)

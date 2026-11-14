@@ -4,6 +4,8 @@ extends Control
 
 const RACE_SCENE := "res://scenes/main.tscn"
 const InputSetup := preload("res://scripts/input_setup.gd")
+const Roster := preload("res://scripts/roster.gd")
+const TrackScript := preload("res://scripts/track.gd")
 
 var _main_box: VBoxContainer
 var _lobby_box: VBoxContainer
@@ -15,6 +17,9 @@ var _players_label: Label
 var _start_button: Button
 var _waiting_label: Label
 var _busy := false
+var _track_box: VBoxContainer
+var _char_buttons: Array[Button] = []
+var _track_buttons: Array[Button] = []
 
 
 func _ready() -> void:
@@ -26,6 +31,8 @@ func _ready() -> void:
 	Net.race_starting.connect(_on_race_starting)
 	Net.room_closed.connect(_on_room_closed)
 	_name_edit.text = Net.player_name if Net.player_name != "Player" else ""
+	_refresh_choices()
+	Sfx.play_music()
 	if Net.room_code != "":
 		_refresh_lobby()  # back from a race, still in the room
 	else:
@@ -93,6 +100,7 @@ func _player_name() -> String:
 func _show_main() -> void:
 	_main_box.visible = true
 	_lobby_box.visible = false
+	_track_box.visible = true
 
 
 func _refresh_lobby() -> void:
@@ -102,6 +110,7 @@ func _refresh_lobby() -> void:
 		return
 	_main_box.visible = false
 	_lobby_box.visible = true
+	_track_box.visible = Net.is_host()
 	_room_label.text = "ROOM  " + Net.room_code
 	var lines: Array[String] = []
 	for i in Net.MAX_PLAYERS:
@@ -112,13 +121,33 @@ func _refresh_lobby() -> void:
 				tags += "  (host)"
 			if int(p.id) == Net.my_id:
 				tags += "  < you"
-			lines.append("%d.  %s%s" % [i + 1, p.name, tags])
+			var ch: Dictionary = Roster.CHARACTERS[clampi(int(p.get("char", 0)), 0, Roster.count() - 1)]
+			lines.append("%d.  %s  [%s]%s" % [i + 1, p.name, ch.name, tags])
 		else:
 			lines.append("%d.  -- open --" % (i + 1))
 	_players_label.text = "\n".join(lines)
 	_start_button.visible = Net.is_host()
 	_waiting_label.visible = not Net.is_host()
 	_set_status("Share the room code with friends. Empty spots are filled by AI racers.")
+
+
+func _pick_char(i: int) -> void:
+	Net.char_id = i
+	Sfx.play("pickup", -8.0)
+	_refresh_choices()
+
+
+func _pick_track(id: String) -> void:
+	Net.track_id = id
+	Sfx.play("beep", -8.0)
+	_refresh_choices()
+
+
+func _refresh_choices() -> void:
+	for i in _char_buttons.size():
+		_char_buttons[i].button_pressed = i == Net.char_id
+	for i in _track_buttons.size():
+		_track_buttons[i].button_pressed = TrackScript.TRACK_ORDER[i] == Net.track_id
 
 
 func _set_status(text: String) -> void:
@@ -140,11 +169,11 @@ func _build_ui() -> void:
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(center)
 	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 18)
+	root.add_theme_constant_override("separation", 12)
 	root.custom_minimum_size = Vector2(520, 0)
 	center.add_child(root)
 
-	var title := _label("KARTRACER", 72, Color(1.0, 0.85, 0.2))
+	var title := _label("KARTRACER", 60, Color(1.0, 0.85, 0.2))
 	root.add_child(title)
 	root.add_child(_label("3 laps  -  8 racers  -  items", 22, Color(0.8, 0.85, 1.0)))
 
@@ -153,6 +182,17 @@ func _build_ui() -> void:
 	root.add_child(_main_box)
 	_name_edit = _line_edit("Your name", 12)
 	_main_box.add_child(_name_edit)
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	for i in Roster.count():
+		var ch: Dictionary = Roster.CHARACTERS[i]
+		var b := _choice_button(ch.name, ch.color)
+		b.pressed.connect(_pick_char.bind(i))
+		grid.add_child(b)
+		_char_buttons.append(b)
+	_main_box.add_child(grid)
 	_main_box.add_child(_button("Single Player", _on_single))
 	_main_box.add_child(_button("Create Online Room", _on_create))
 	var join_row := HBoxContainer.new()
@@ -165,6 +205,20 @@ func _build_ui() -> void:
 	join.custom_minimum_size.x = 200
 	join_row.add_child(join)
 	_main_box.add_child(join_row)
+
+	_track_box = VBoxContainer.new()
+	var track_row := HBoxContainer.new()
+	track_row.add_theme_constant_override("separation", 8)
+	for id in TrackScript.TRACK_ORDER:
+		var layout: Dictionary = TrackScript.LAYOUTS[id]
+		var b := _choice_button(layout.name, layout.walls[0])
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.pressed.connect(_pick_track.bind(id))
+		track_row.add_child(b)
+		_track_buttons.append(b)
+	_track_box.add_child(track_row)
+	root.add_child(_track_box)
+	root.move_child(_track_box, root.get_children().find(_main_box))
 
 	_lobby_box = VBoxContainer.new()
 	_lobby_box.add_theme_constant_override("separation", 12)
@@ -190,6 +244,32 @@ func _build_ui() -> void:
 	root.add_child(help)
 
 
+func _choice_button(text: String, color: Color) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.toggle_mode = true
+	b.custom_minimum_size = Vector2(124, 46)
+	b.add_theme_font_size_override("font_size", 20)
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = color.darkened(0.45)
+	normal.set_corner_radius_all(10)
+	normal.set_border_width_all(2)
+	normal.border_color = color.darkened(0.2)
+	var picked := normal.duplicate()
+	picked.bg_color = color
+	picked.border_color = Color.WHITE
+	picked.set_border_width_all(4)
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", normal)
+	b.add_theme_stylebox_override("pressed", picked)
+	b.add_theme_stylebox_override("hover_pressed", picked)
+	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	var light := color.get_luminance() > 0.6
+	b.add_theme_color_override("font_pressed_color", Color.BLACK if light else Color.WHITE)
+	b.add_theme_color_override("font_hover_pressed_color", Color.BLACK if light else Color.WHITE)
+	return b
+
+
 func _label(text: String, size: int, color: Color) -> Label:
 	var l := Label.new()
 	l.text = text
@@ -202,7 +282,7 @@ func _label(text: String, size: int, color: Color) -> Label:
 func _button(text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(0, 56)
+	b.custom_minimum_size = Vector2(0, 50)
 	b.add_theme_font_size_override("font_size", 24)
 	b.pressed.connect(cb)
 	return b
